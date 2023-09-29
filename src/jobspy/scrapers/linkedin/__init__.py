@@ -4,6 +4,7 @@ jobspy.scrapers.linkedin
 
 This module contains routines to scrape LinkedIn.
 """
+import time
 from typing import Optional, Tuple
 from datetime import datetime
 import traceback
@@ -23,7 +24,7 @@ from ...jobs import (
     Compensation,
     CompensationInterval,
 )
-
+import urllib.parse
 
 class LinkedInScraper(Scraper):
     def __init__(self, proxy: Optional[str] = None):
@@ -33,6 +34,12 @@ class LinkedInScraper(Scraper):
         site = Site(Site.LINKEDIN)
         self.url = "https://www.linkedin.com"
         super().__init__(site, proxy=proxy)
+        self.max_job = 300
+        self.job_count = 0
+        self.proxy_config = {
+            "http": proxy,
+            "https": proxy,
+        }
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
@@ -70,15 +77,32 @@ class LinkedInScraper(Scraper):
                     "f_AL": "true" if scraper_input.easy_apply else None,
                 }
 
-                params = {k: v for k, v in params.items() if v is not None}
+                #serach with keywords
+                if scraper_input.search_term.find('https') == -1:
+                    params = {k: v for k, v in params.items() if v is not None}
+                else:
+                    params['keywords'] =''
+                    parsed_url = urllib.parse.urlparse(scraper_input.search_term)
+                    captured_value = urllib.parse.parse_qs(parsed_url.query)
+                    for url_key in captured_value:
+                        params[url_key]=captured_value[url_key][0]
+                    params['pageNum'] = page
+                    params = {k: v for k, v in params.items() if v is not None}
+
                 try:
+                    print(params)
                     response = session.get(
                         f"{self.url}/jobs/search",
+                        headers={
+                                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36"
+                                },
                         params=params,
                         allow_redirects=True,
                         proxies=self.proxy,
-                        timeout=10,
+                        timeout=20,
                     )
+                    time.sleep(1)
+                    print(response.url)
                     response.raise_for_status()
                 except requests.HTTPError as e:
                     raise LinkedInException(
@@ -109,7 +133,13 @@ class LinkedInScraper(Scraper):
                     job_url = f"{self.url}/jobs/view/{job_id}"
                     if job_url in seen_urls:
                         continue
+
+                    if self.check_exist(job_url):
+                        time.sleep(0.1)
+                        return None
+
                     seen_urls.add(job_url)
+
                     job_info = job_card.find("div", class_="base-search-card__info")
                     if job_info is None:
                         continue
@@ -133,16 +163,16 @@ class LinkedInScraper(Scraper):
                         try:
                             date_posted = datetime.strptime(datetime_str, "%Y-%m-%d")
                         except Exception as e:
-                            date_posted = None
+                            date_posted = datetime.today()
                     else:
-                        date_posted = None
+                        date_posted = datetime.today()
 
                     job_post = JobPost(
                         title=title,
                         description=description,
                         company_name=company,
                         location=location,
-                        date_posted=date_posted,
+                        date_posted=int(date_posted.timestamp()) if date_posted else None,
                         job_url=job_url,
                         job_type=job_type,
                         compensation=Compensation(
@@ -171,7 +201,8 @@ class LinkedInScraper(Scraper):
         :return: description or None
         """
         try:
-            response = requests.get(job_page_url, timeout=5, proxies=self.proxy)
+            response = requests.get(job_page_url, timeout=15, proxies=self.proxy_config)
+            time.sleep(1)
             response.raise_for_status()
         except Exception as e:
             return None, None

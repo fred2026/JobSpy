@@ -102,6 +102,7 @@ def scrape_jobs(
             site_to_jobs_dict[site_value] = scraped_data
 
     jobs_dfs: List[pd.DataFrame] = []
+    dfs = []
 
     for site, job_response in site_to_jobs_dict.items():
         for job in job_response.jobs:
@@ -117,7 +118,19 @@ def scrape_jobs(
             else:
                 job_data["job_type"] = None
 
-            job_data["location"] = Location(**job_data["location"]).display_location()
+            # job_data["location"] = Location(**job_data["location"]).display_location()
+            if job_data["location"] and isinstance(job_data["location"], dict):
+                job_data["city"] = job_data["location"].get("city", "")
+                job_data["state"] = job_data["location"].get("state", "")
+                # job_data["country"] = job_data["location"].get("country", "USA")
+                country_str = str(job_data["location"].get("country", "USA"))
+                if country_str.find("Country.") != -1:
+                    country_str = country_str[8:]
+                job_data["country"] = country_str
+            else:
+                job_data["city"] = None
+                job_data["state"] = None
+                job_data["country"] = None
 
             compensation_obj = job_data.get("compensation")
             if compensation_obj and isinstance(compensation_obj, dict):
@@ -135,27 +148,28 @@ def scrape_jobs(
                 job_data["max_amount"] = None
                 job_data["currency"] = None
 
-            job_df = pd.DataFrame([job_data])
-            jobs_dfs.append(job_df)
+            # job_df = pd.DataFrame([job_data])
+            # jobs_dfs.append(job_df)
+            dfs.append(job_data)
 
-    if jobs_dfs:
-        jobs_df = pd.concat(jobs_dfs, ignore_index=True)
-        desired_order: List[str] = [
-            "site",
-            "title",
-            "company",
-            "location",
-            "date_posted",
-            "job_type",
-            "interval",
-            "min_amount",
-            "max_amount",
-            "currency",
-            "job_url_hyper" if hyperlinks else "job_url",
-            "description",
-        ]
-        jobs_formatted_df = jobs_df[desired_order]
-    else:
-        jobs_formatted_df = pd.DataFrame()
+    # if jobs_dfs:
+    #     jobs_df = pd.concat(jobs_dfs, ignore_index=True)
+    #     desired_order: List[str] = [
+    #         "site",
+    #         "title",
+    #         "company",
+    #         "location",
+    #         "date_posted",
+    #         "job_type",
+    #         "interval",
+    #         "min_amount",
+    #         "max_amount",
+    #         "currency",
+    #         "job_url_hyper" if hyperlinks else "job_url",
+    #         "description",
+    #     ]
+    #     jobs_formatted_df = jobs_df[desired_order]
+    # else:
+    #     jobs_formatted_df = pd.DataFrame()
 
-    return jobs_formatted_df
+    return dfs

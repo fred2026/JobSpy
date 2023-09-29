@@ -8,6 +8,7 @@ import re
 import math
 import io
 import json
+import time
 import traceback
 from datetime import datetime
 from typing import Optional
@@ -40,6 +41,10 @@ class IndeedScraper(Scraper):
 
         self.jobs_per_page = 15
         self.seen_urls = set()
+        self.max_job = 300
+        self.job_count = 0
+        if proxy=='':
+            self.proxy = None
 
     def scrape_page(
         self, scraper_input: ScraperInput, page: int, session: tls_client.Session
@@ -54,38 +59,53 @@ class IndeedScraper(Scraper):
         self.country = scraper_input.country
         domain = self.country.domain_value
         self.url = f"https://{domain}.indeed.com"
-
         job_list: list[JobPost] = []
 
+        self.max_job = scraper_input.results_wanted
+        if self.job_count >= self.max_job:
+            print(f'max_job {self.max_job} reached')
+            return job_list, 0
+        
         params = {
             "q": scraper_input.search_term,
             "l": scraper_input.location,
             "filter": 0,
             "start": 0 + page * 10,
         }
-        if scraper_input.distance:
-            params["radius"] = scraper_input.distance
 
-        sc_values = []
-        if scraper_input.is_remote:
-            sc_values.append("attr(DSQF7)")
-        if scraper_input.job_type:
-            sc_values.append("jt({})".format(scraper_input.job_type.value))
+        #serach with keywords
+        if scraper_input.search_term.find('https') == -1:
+            if scraper_input.distance:
+                params["radius"] = scraper_input.distance
 
-        if sc_values:
-            params["sc"] = "0kf:" + "".join(sc_values) + ";"
+            sc_values = []
+            if scraper_input.is_remote:
+                sc_values.append("attr(DSQF7)")
+            if scraper_input.job_type:
+                sc_values.append("jt({})".format(scraper_input.job_type.value))
+
+            if sc_values:
+                params["sc"] = "0kf:" + "".join(sc_values) + ";"
+        else:
+            parsed_url = urllib.parse.urlparse(scraper_input.search_term)
+            captured_value = urllib.parse.parse_qs(parsed_url.query)
+            for url_key in captured_value:
+                params[url_key]=captured_value[url_key][0]
+
         try:
+            print(f'start {params["start"]}. time {datetime.now().strftime("%H:%M:%S")}')
             response = session.get(
                 self.url + "/jobs",
                 params=params,
                 allow_redirects=True,
                 proxy=self.proxy,
-                timeout_seconds=10,
+                timeout_seconds=30,
             )
             if response.status_code not in range(200, 400):
                 raise IndeedException(
                     f"bad response with status code: {response.status_code}"
                 )
+            time.sleep(1)
         except Exception as e:
             if "Proxy responded with" in str(e):
                 raise IndeedException("bad proxy")
@@ -112,7 +132,9 @@ class IndeedScraper(Scraper):
             job_url_client = f'{self.url}/viewjob?jk={job["jobkey"]}'
             if job_url in self.seen_urls:
                 return None
-
+            if self.check_exist(job_url_client):
+                time.sleep(0.1)
+                return None
             extracted_salary = job.get("extractedSalary")
             compensation = None
             if extracted_salary:
@@ -132,9 +154,9 @@ class IndeedScraper(Scraper):
                     )
 
             job_type = IndeedScraper.get_job_type(job)
-            timestamp_seconds = job["pubDate"] / 1000
-            date_posted = datetime.fromtimestamp(timestamp_seconds)
-            date_posted = date_posted.strftime("%Y-%m-%d")
+            date_posted = job["pubDate"] / 1000
+            # date_posted = datetime.fromtimestamp(timestamp_seconds)
+            # date_posted = date_posted.strftime("%Y-%m-%d")
 
             description = self.get_description(job_url, session)
             with io.StringIO(job["snippet"]) as f:
@@ -166,7 +188,8 @@ class IndeedScraper(Scraper):
             ]
 
         job_list = [result.result() for result in job_results if result.result()]
-
+        print(f'got {len(job_list)} jobs.')
+        self.job_count += len(job_list)
         return job_list, total_num_jobs
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
@@ -227,7 +250,7 @@ class IndeedScraper(Scraper):
 
         if response.status_code not in range(200, 400):
             return None
-
+        time.sleep(1)
         raw_description = response.json()["body"]["jobInfoWrapperModel"][
             "jobInfoModel"
         ]["sanitizedJobDescription"]

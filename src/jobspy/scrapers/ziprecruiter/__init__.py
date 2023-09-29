@@ -7,6 +7,7 @@ This module contains routines to scrape ZipRecruiter.
 import math
 import json
 import re
+import time
 import traceback
 from datetime import datetime
 from typing import Optional, Tuple
@@ -41,6 +42,8 @@ class ZipRecruiterScraper(Scraper):
         super().__init__(site, proxy=proxy)
 
         self.jobs_per_page = 20
+        self.max_job = 300
+        self.job_count = 0
         self.seen_urls = set()
         self.session = tls_client.Session(
             client_identifier="chrome112", random_tls_extension_order=True
@@ -57,19 +60,28 @@ class ZipRecruiterScraper(Scraper):
         :return: jobs found on page, total number of jobs found for search
         """
         job_list: list[JobPost] = []
+        self.max_job = scraper_input.results_wanted
+
+        if self.job_count >= self.max_job:
+            print(f'max_job {self.max_job} reached')
+            return job_list, 0
+        
         try:
+            if self.proxy == '':
+                self.proxy = None
             response = self.session.get(
                 self.url + "/jobs-search",
                 headers=ZipRecruiterScraper.headers(),
                 params=ZipRecruiterScraper.add_params(scraper_input, page),
                 allow_redirects=True,
                 proxy=self.proxy,
-                timeout_seconds=10,
+                timeout_seconds=20,
             )
             if response.status_code != 200:
                 raise ZipRecruiterException(
                     f"bad response status code: {response.status_code}"
                 )
+            time.sleep(1)
         except Exception as e:
             if "Proxy responded with non 200 code" in str(e):
                 raise ZipRecruiterException("bad proxy")
@@ -95,7 +107,7 @@ class ZipRecruiterScraper(Scraper):
             # with open("zip_method_8.html", "w") as f:
             #     f.write(soup.prettify())
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             if page_variant == "javascript":
                 job_results = [
                     executor.submit(self.process_job_javascript, job)
@@ -111,6 +123,7 @@ class ZipRecruiterScraper(Scraper):
                 ]
 
         job_list = [result.result() for result in job_results if result.result()]
+        print(f'got {len(job_list)} jobs.')
         return job_list
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
@@ -125,7 +138,7 @@ class ZipRecruiterScraper(Scraper):
             3, math.ceil(scraper_input.results_wanted / self.jobs_per_page)
         )
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             futures: list[Future] = [
                 executor.submit(self.find_jobs_in_page, scraper_input, page)
                 for page in range(2, pages_to_process + 1)
@@ -146,14 +159,22 @@ class ZipRecruiterScraper(Scraper):
         :return JobPost
         """
         job_url = job.find("a", {"class": "job_link"})["href"]
+
+        #remove lvk in job_url
+        if job_url.find('&lvk=') != -1:
+            job_url = job_url[:job_url.find('&lvk=')]
+
         if job_url in self.seen_urls:
             return None
-
+        if self.check_url(job_url):
+            time.sleep(0.1)
+            return None
+        
         title = job.find("h2", {"class": "title"}).text
         company = job.find("a", {"class": "company_name"}).text.strip()
 
         description, updated_job_url = self.get_description(job_url)
-        job_url = updated_job_url if updated_job_url else job_url
+        # job_url = updated_job_url if updated_job_url else job_url
         if description is None:
             description = job.find("p", {"class": "job_snippet"}).text.strip()
 
@@ -186,11 +207,21 @@ class ZipRecruiterScraper(Scraper):
         :return JobPost
         """
         job_url = job.find("a", class_="job_link")["href"]
+        #remove lvk in job_url
+        if job_url.find('&lvk=') != -1:
+            job_url = job_url[:job_url.find('&lvk=')]
+
+        if job_url in self.seen_urls:
+            return None
+        if self.check_url(job_url):
+            time.sleep(0.1)
+            return None
+        
         title = job.find("h2", class_="title").text
         company = job.find("a", class_="company_name").text.strip()
 
         description, updated_job_url = self.get_description(job_url)
-        job_url = updated_job_url if updated_job_url else job_url
+        # job_url = updated_job_url if updated_job_url else job_url
         if description is None:
             description = job.find("p", class_="job_snippet").get_text().strip()
 
@@ -223,8 +254,14 @@ class ZipRecruiterScraper(Scraper):
         title = job.get("Title")
         job_url = job.get("JobURL")
 
+        if job_url in self.seen_urls:
+            return None
+        if self.check_exist(job_url):
+            time.sleep(0.1)
+            return None
+
         description, updated_job_url = self.get_description(job_url)
-        job_url = updated_job_url if updated_job_url else job_url
+        # job_url = updated_job_url if updated_job_url else job_url
         if description is None:
             description = BeautifulSoup(
                 job.get("Snippet", "").strip(), "html.parser"
@@ -269,10 +306,9 @@ class ZipRecruiterScraper(Scraper):
         if posted_time_match:
             date_time_str = posted_time_match.group(1)
             date_posted_obj = datetime.strptime(date_time_str, "%Y-%m-%dT%H:%M:%SZ")
-            date_posted = date_posted_obj.date()
+            date_posted = int(date_posted_obj.timestamp())
         else:
-            date_posted = date.today()
-        job_url = job.get("JobURL")
+            date_posted = int(datetime.today().timestamp())
 
         return JobPost(
             title=title,
@@ -302,15 +338,21 @@ class ZipRecruiterScraper(Scraper):
         :return: description or None, response url
         """
         try:
+            self.proxy_config = {
+                                    "http": self.proxy,
+                                    "https": self.proxy,
+                                }
             response = requests.get(
                 job_page_url,
                 headers=ZipRecruiterScraper.headers(),
                 allow_redirects=True,
-                timeout=5,
-                proxies=self.proxy,
+                timeout=20,
+                proxies=self.proxy_config,
             )
             if response.status_code not in range(200, 400):
+                print(f'get_description {response.status_code}')
                 return None, None
+            time.sleep(1)
         except Exception as e:
             return None, None
 
@@ -330,25 +372,34 @@ class ZipRecruiterScraper(Scraper):
             "page": page,
             "form": "jobs-landing",
         }
-        job_type_value = None
-        if scraper_input.job_type:
-            if scraper_input.job_type.value == "fulltime":
-                job_type_value = "full_time"
-            elif scraper_input.job_type.value == "parttime":
-                job_type_value = "part_time"
-            else:
-                job_type_value = scraper_input.job_type.value
+        #serach with keywords
+        if scraper_input.search_term.find('https') == -1:
+            job_type_value = None
+            if scraper_input.job_type:
+                if scraper_input.job_type.value == "fulltime":
+                    job_type_value = "full_time"
+                elif scraper_input.job_type.value == "parttime":
+                    job_type_value = "part_time"
+                else:
+                    job_type_value = scraper_input.job_type.value
 
-        if job_type_value:
-            params[
-                "refine_by_employment"
-            ] = f"employment_type:employment_type:{job_type_value}"
+            if job_type_value:
+                params[
+                    "refine_by_employment"
+                ] = f"employment_type:employment_type:{job_type_value}"
 
-        if scraper_input.is_remote:
-            params["refine_by_location_type"] = "only_remote"
+            if scraper_input.is_remote:
+                params["refine_by_location_type"] = "only_remote"
 
-        if scraper_input.distance:
-            params["radius"] = scraper_input.distance
+            if scraper_input.distance:
+                params["radius"] = scraper_input.distance
+        else:
+            params['search']=''
+            parsed_url = urlparse(scraper_input.search_term)
+            captured_value = parse_qs(parsed_url.query)
+            for url_key in captured_value:
+                params[url_key]=captured_value[url_key][0]
+            params['page'] = page
 
         return params
 
@@ -389,7 +440,7 @@ class ZipRecruiterScraper(Scraper):
             posted_date = datetime.strptime(
                 posted_time_str, "%Y-%m-%dT%H:%M:%SZ"
             ).date()
-            return posted_date
+            return int(posted_date.timestamp())
 
         return None
 
