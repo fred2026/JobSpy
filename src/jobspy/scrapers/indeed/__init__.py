@@ -8,8 +8,11 @@ import re
 import math
 import io
 import json
+<<<<<<< HEAD
 import time
 import traceback
+=======
+>>>>>>> origin/main
 from datetime import datetime
 from typing import Optional
 
@@ -28,7 +31,13 @@ from ...jobs import (
     JobResponse,
     JobType,
 )
-from .. import Scraper, ScraperInput, Site, Country
+from .. import Scraper, ScraperInput, Site
+
+def extract_emails_from_text(text: str) -> Optional[list[str]]:
+    if not text:
+        return None
+    email_regex = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+    return email_regex.findall(text)
 
 
 class IndeedScraper(Scraper):
@@ -36,6 +45,8 @@ class IndeedScraper(Scraper):
         """
         Initializes IndeedScraper with the Indeed job search url
         """
+        self.url = None
+        self.country = None
         site = Site(Site.INDEED)
         super().__init__(site, proxy=proxy)
 
@@ -47,7 +58,7 @@ class IndeedScraper(Scraper):
             self.proxy = None
 
     def scrape_page(
-        self, scraper_input: ScraperInput, page: int, session: tls_client.Session
+            self, scraper_input: ScraperInput, page: int, session: tls_client.Session
     ) -> tuple[list[JobPost], int]:
         """
         Scrapes a page of Indeed for jobs with scraper_input criteria
@@ -70,7 +81,7 @@ class IndeedScraper(Scraper):
             "q": scraper_input.search_term,
             "l": scraper_input.location,
             "filter": 0,
-            "start": 0 + page * 10,
+            "start": scraper_input.offset + page * 10,
         }
 
         #serach with keywords
@@ -95,7 +106,7 @@ class IndeedScraper(Scraper):
         try:
             print(f'start {params["start"]}. time {datetime.now().strftime("%H:%M:%S")}')
             response = session.get(
-                self.url + "/jobs",
+                f"{self.url}/jobs",
                 params=params,
                 allow_redirects=True,
                 proxy=self.proxy,
@@ -121,9 +132,9 @@ class IndeedScraper(Scraper):
         total_num_jobs = IndeedScraper.total_jobs(soup)
 
         if (
-            not jobs.get("metaData", {})
-            .get("mosaicProviderJobCardsModel", {})
-            .get("results")
+                not jobs.get("metaData", {})
+                        .get("mosaicProviderJobCardsModel", {})
+                        .get("results")
         ):
             raise IndeedException("No jobs found.")
 
@@ -159,9 +170,10 @@ class IndeedScraper(Scraper):
             # date_posted = date_posted.strftime("%Y-%m-%d")
 
             description = self.get_description(job_url, session)
+            emails = extract_emails_from_text(description)
             with io.StringIO(job["snippet"]) as f:
-                soup = BeautifulSoup(f, "html.parser")
-                li_elements = soup.find_all("li")
+                soup_io = BeautifulSoup(f, "html.parser")
+                li_elements = soup_io.find_all("li")
                 if description is None and li_elements:
                     description = " ".join(li.text for li in li_elements)
 
@@ -174,6 +186,7 @@ class IndeedScraper(Scraper):
                     state=job.get("jobLocationState"),
                     country=self.country,
                 ),
+                emails=extract_emails_from_text(description),
                 job_type=job_type,
                 compensation=compensation,
                 date_posted=date_posted,
@@ -203,7 +216,7 @@ class IndeedScraper(Scraper):
         )
 
         pages_to_process = (
-            math.ceil(scraper_input.results_wanted / self.jobs_per_page) - 1
+                math.ceil(scraper_input.results_wanted / self.jobs_per_page) - 1
         )
 
         #: get first page to initialize session
@@ -229,7 +242,7 @@ class IndeedScraper(Scraper):
         )
         return job_response
 
-    def get_description(self, job_page_url: str, session: tls_client.Session) -> str:
+    def get_description(self, job_page_url: str, session: tls_client.Session) -> Optional[str]:
         """
         Retrieves job description by going to the job page url
         :param job_page_url:
@@ -272,13 +285,17 @@ class IndeedScraper(Scraper):
                     label = taxonomy["attributes"][0].get("label")
                     if label:
                         job_type_str = label.replace("-", "").replace(" ", "").lower()
-                        return IndeedScraper.get_enum_from_value(job_type_str)
+                        return IndeedScraper.get_enum_from_job_type(job_type_str)
         return None
 
     @staticmethod
-    def get_enum_from_value(value_str):
+    def get_enum_from_job_type(job_type_str):
+        """
+        Given a string, returns the corresponding JobType enum member if a match is found.
         for job_type in JobType:
-            if value_str in job_type.value:
+        """
+        for job_type in JobType:
+            if job_type_str in job_type.value:
                 return job_type
         return None
 
@@ -299,9 +316,9 @@ class IndeedScraper(Scraper):
 
             for tag in script_tags:
                 if (
-                    tag.string
-                    and "mosaic.providerData" in tag.string
-                    and "mosaic-provider-jobcards" in tag.string
+                        tag.string
+                        and "mosaic.providerData" in tag.string
+                        and "mosaic-provider-jobcards" in tag.string
                 ):
                     return tag
             return None
