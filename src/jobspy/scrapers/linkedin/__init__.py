@@ -105,8 +105,7 @@ class LinkedInScraper(Scraper):
             while retries < self.MAX_RETRIES:
                 try:
                     # print(params)
-                    session = requests.Session()
-                    response = session.get(
+                    response = requests.get(
                         f"{self.url}/jobs-guest/jobs/api/seeMoreJobPostings/search?",
                         headers={
                                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36"
