@@ -8,11 +8,8 @@ import re
 import math
 import io
 import json
-<<<<<<< HEAD
 import time
 import traceback
-=======
->>>>>>> origin/main
 from datetime import datetime
 from typing import Optional
 

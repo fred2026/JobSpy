@@ -141,7 +141,7 @@ class LinkedInScraper(Scraper):
 
             soup = BeautifulSoup(response.text, "html.parser")
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            with ThreadPoolExecutor(git=1) as executor:
                 futures = []
                 for job_card in soup.find_all("div", class_="base-search-card"):
                     job_url = None
