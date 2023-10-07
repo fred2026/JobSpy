@@ -8,6 +8,7 @@ import time
 from typing import Optional
 from datetime import datetime
 
+import pickle
 import requests
 import time
 import re
@@ -16,6 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 from threading import Lock
+import http.cookiejar
 
 from .. import Scraper, ScraperInput, Site
 from ..exceptions import LinkedInException
@@ -52,6 +54,35 @@ class LinkedInScraper(Scraper):
             "http": proxy,
             "https": proxy,
         }
+        self.session = requests.Session()
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36'})
+        self.session.headers.update({'Connection': 'keep-alive'})
+        self.session.headers.update({'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'})
+        
+        self.cookies = pickle.load(open(self.linkedin_cookie_file, "rb"))
+        cookie_jar = http.cookiejar.CookieJar()
+        for cookie_dict in self.cookies:
+            cookie = http.cookiejar.Cookie(
+                version=0,
+                name=cookie_dict['name'],
+                value=cookie_dict['value'],
+                port=None,
+                port_specified=False,
+                domain=cookie_dict['domain'],
+                domain_specified=True,
+                domain_initial_dot=False,
+                path=cookie_dict['path'],
+                path_specified=True,
+                secure=cookie_dict.get('secure', False),
+                expires=cookie_dict.get('expiry', None),
+                discard=False,
+                comment=None,
+                comment_url=None,
+                rest=None,
+                rfc2109=False
+            )
+        cookie_jar.set_cookie(cookie)
+        self.session.cookies.update(cookie_jar)
 
     def scrape(self, scraper_input: ScraperInput) -> JobResponse:
         """
@@ -91,6 +122,7 @@ class LinkedInScraper(Scraper):
 
             #serach with keywords
             if scraper_input.search_term.find('https') == -1:
+                params['start'] = page
                 params = {k: v for k, v in params.items() if v is not None}
             else:
                 params['keywords'] =''
@@ -99,24 +131,23 @@ class LinkedInScraper(Scraper):
                 for url_key in captured_value:
                     params[url_key]=captured_value[url_key][0]
                 params['pageNum'] = page
+                params['start'] = page
                 params = {k: v for k, v in params.items() if v is not None}
 
             retries = 0
             while retries < self.MAX_RETRIES:
                 try:
                     # print(params)
-                    response = requests.get(
+                    response = self.session.get(
+                        # f"{self.url}/jobs/search?",
                         f"{self.url}/jobs-guest/jobs/api/seeMoreJobPostings/search?",
-                        headers={
-                                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/78.0.3904.97 Safari/537.36"
-                                },
-                    params=params,
-                    allow_redirects=True,
-                    proxies=self.proxy,
-                    timeout=20,
-                    )
-                    time.sleep(1)
-                    print(response.url)
+                        params=params,
+                        allow_redirects=True,
+                        proxies=self.proxy_config,
+                        timeout=20,
+                        )
+                    time.sleep(0.7)
+                    # print(response.url,response.status_code)
                     response.raise_for_status()
 
                     break
@@ -133,15 +164,20 @@ class LinkedInScraper(Scraper):
                 except ProxyError as e:
                     raise LinkedInException("bad proxy")
                 except Exception as e:
-                    raise LinkedInException(str(e))
+                    raise LinkedInException(str(e) + type(e).__name__ + __file__ + str(e.__traceback__.tb_lineno))
             else:
                 # Raise an exception if the maximum number of retries is reached
                 raise LinkedInException("Max retries reached, failed to get a valid response")
 
             soup = BeautifulSoup(response.text, "html.parser")
 
-            with ThreadPoolExecutor(git=1) as executor:
+            with ThreadPoolExecutor(max_workers=1) as executor:
                 futures = []
+                jobs_in_this_page = len(soup.find_all("div", class_="base-search-card"))
+                print(f'{response.url} \n found {jobs_in_this_page} jobs.')
+                if jobs_in_this_page < 1:
+                    page = 9999
+                    break
                 for job_card in soup.find_all("div", class_="base-search-card"):
                     job_url = None
                     href_tag = job_card.find("a", class_="base-card__full-link")
@@ -150,27 +186,28 @@ class LinkedInScraper(Scraper):
                         job_id = href.split("-")[-1]
                         job_url = f"{self.url}/jobs/view/{job_id}"
 
-                    with url_lock:
-                        if job_url in seen_urls:
-                            continue
-                        if self.check_exist(job_url):
-                            time.sleep(0.1)
-                            continue
-                        seen_urls.add(job_url)
+                    # with url_lock:
+                    if job_url in seen_urls:
+                        continue
+                    if self.check_exist(job_url):
+                        time.sleep(0.1)
+                        continue
+                    seen_urls.add(job_url)
 
                     futures.append(executor.submit(self.process_job, job_card, job_url))
 
                 for future in as_completed(futures):
                     try:
                         job_post = future.result()
+                        # print(f'job post: {job_post}')
                         if job_post:
                             job_list.append(job_post)
                     except Exception as e:
                         raise LinkedInException("Exception occurred while processing jobs")
             page += 25
 
-        job_list = job_list[: scraper_input.results_wanted]
-        return JobResponse(jobs=job_list)
+        # job_list = job_list[: scraper_input.results_wanted]
+        return JobResponse(jobs=job_list, total_results=len(job_list))
 
     def process_job(self, job_card: Tag, job_url: str) -> Optional[JobPost]:
         title_tag = job_card.find("span", class_="sr-only")
@@ -195,7 +232,6 @@ class LinkedInScraper(Scraper):
             date_posted = datetime.today()
         benefits_tag = job_card.find("span", class_="result-benefits__text")
         benefits = " ".join(benefits_tag.get_text().split()) if benefits_tag else None
-
         description, job_type = self.get_job_description(job_url)
 
         return JobPost(
@@ -218,7 +254,7 @@ class LinkedInScraper(Scraper):
         :return: description or None
         """
         try:
-            response = requests.get(job_page_url, timeout=15, proxies=self.proxy_config)
+            response = self.session.get(job_page_url, timeout=15, proxies=self.proxy_config)
             time.sleep(1)
             response.raise_for_status()
         except Exception as e:

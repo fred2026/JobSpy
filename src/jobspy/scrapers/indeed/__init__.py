@@ -113,7 +113,7 @@ class IndeedScraper(Scraper):
                 raise IndeedException(
                     f"bad response with status code: {response.status_code}"
                 )
-            time.sleep(1)
+            time.sleep(0.7)
         except Exception as e:
             if "Proxy responded with" in str(e):
                 raise IndeedException("bad proxy")
@@ -198,7 +198,7 @@ class IndeedScraper(Scraper):
             ]
 
         job_list = [result.result() for result in job_results if result.result()]
-        print(f'got {len(job_list)} jobs.')
+        print(f'got {len(job_list)} indeed jobs.')
         self.job_count += len(job_list)
         return job_list, total_num_jobs
 
@@ -212,13 +212,20 @@ class IndeedScraper(Scraper):
             client_identifier="chrome112", random_tls_extension_order=True
         )
 
-        pages_to_process = (
-                math.ceil(scraper_input.results_wanted / self.jobs_per_page) - 1
-        )
-
         #: get first page to initialize session
         job_list, total_results = self.scrape_page(scraper_input, 0, session)
 
+        if scraper_input.results_wanted <= total_results:
+            pages_to_process = (
+                    math.ceil(scraper_input.results_wanted / self.jobs_per_page) - 1
+            )
+        else:
+            pages_to_process = (
+                    math.ceil(total_results / self.jobs_per_page) - 1
+            )
+
+        print('pages_to_process', pages_to_process)
+              
         with ThreadPoolExecutor(max_workers=1) as executor:
             futures: list[Future] = [
                 executor.submit(self.scrape_page, scraper_input, page, session)
@@ -260,7 +267,7 @@ class IndeedScraper(Scraper):
 
         if response.status_code not in range(200, 400):
             return None
-        time.sleep(1)
+        time.sleep(0.7)
         raw_description = response.json()["body"]["jobInfoWrapperModel"][
             "jobInfoModel"
         ]["sanitizedJobDescription"]
